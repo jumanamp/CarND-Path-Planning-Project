@@ -207,7 +207,7 @@ int main() {
     }
 
     int lane = 1; // start in lane 1
-    double ref_v = 49.5; // to give speed limit
+    double ref_v = 0.0; // to give speed limit
 
   h.onMessage([&ref_v, &lane, &map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
@@ -252,6 +252,7 @@ int main() {
               car_s = end_path_s; // we start from the last value
             }
 
+            bool too_close = false;
             // check data from sensor fusion
             for (int i=0; i<sensor_fusion.size(); i++) {
               // check if car is our lane
@@ -267,9 +268,17 @@ int main() {
 
                 if ( (other_car_s_future > car_s) && ((other_car_s_future - car_s) < 30))
                 {
-                  ref_v = 29.5; // reduced speed not to collide
+                  too_close = true;
                 }
               }
+            }
+
+            // manage velocity change smoothly
+            if(too_close){
+              ref_v -= 0.224;
+            }
+            else if(ref_v < 49.5){
+              ref_v += 0.224;
             }
 
             // create a list of waypoints spaced at 30m and interpolate using spline
