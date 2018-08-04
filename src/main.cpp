@@ -8,6 +8,7 @@
 #include "Eigen-3.3/Eigen/Core"
 #include "Eigen-3.3/Eigen/QR"
 #include "json.hpp"
+#include "spline.h"
 
 using namespace std;
 
@@ -203,9 +204,12 @@ int main() {
   	map_waypoints_s.push_back(s);
   	map_waypoints_dx.push_back(d_x);
   	map_waypoints_dy.push_back(d_y);
-  }
+    }
 
-  h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+    int lane = 1; // start in lane 1
+    double ref_v = 49.5; // to give speed limit
+
+  h.onMessage([&ref_v, &lane, &map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -232,6 +236,7 @@ int main() {
           	double car_yaw = j[1]["yaw"];
           	double car_speed = j[1]["speed"];
 
+
           	// Previous path data given to the Planner
           	auto previous_path_x = j[1]["previous_path_x"];
           	auto previous_path_y = j[1]["previous_path_y"];
@@ -241,6 +246,103 @@ int main() {
 
           	// Sensor Fusion Data, a list of all other cars on the same side of the road.
           	auto sensor_fusion = j[1]["sensor_fusion"];
+            int prev_size = previous_path_x.size();
+
+            if (prev_size > 0) {
+              car_s = end_path_s; // we start from the last value
+            }
+
+            // check data from sensor fusion
+            for (int i=0; i<sensor_fusion.size(); i++) {
+              // check if car is our lane
+              float d = sensor_fusion[i][6];
+              if( d < (2+ (4*lane)+ 2) && d > (2+ (4*lane) -2)) {
+                double vx = sensor_fusion[i][3];
+                double vy = sensor_fusion[i][4];
+                double other_car_speed = sqrt(vx*vx+vy*vy);
+                double other_car_s = sensor_fusion[i][5];
+
+                // where the car is in future needs to be derived
+                double other_car_s_future = other_car_s + ((double)prev_size * 0.02 * other_car_speed);
+
+                if ( (other_car_s_future > car_s) && ((other_car_s_future - car_s) < 30))
+                {
+                  ref_v = 29.5; // reduced speed not to collide
+                }
+              }
+            }
+
+            // create a list of waypoints spaced at 30m and interpolate using spline
+            // Idea is to take two points from previous path and predict three points
+            // Use spine to then create path points distanced by 0.5 m
+            vector<double> waypts_x;
+            vector<double> waypts_y;
+
+            // reference states for x, y and yaw for creating way_points
+            double ref_x = car_x;
+            double ref_y = car_y;
+            double ref_yaw = deg2rad(car_yaw);
+
+            if (prev_size < 2) { // previous size is empty
+              // two points that is tangential to the position of the car
+              double prev_x = car_x - cos(car_yaw);
+              double prev_y = car_y - sin(car_yaw);
+
+              waypts_x.push_back(prev_x);
+              waypts_x.push_back(ref_x);
+
+              waypts_y.push_back(prev_y);
+              waypts_y.push_back(ref_y);
+
+            }
+            else {
+              // take last point from previous path as reference
+              ref_x = previous_path_x[prev_size - 1];
+              ref_y = previous_path_y[prev_size - 1];
+
+              // take second last point as well
+              double prev_ref_x = previous_path_x[prev_size - 2];
+              double prev_ref_y = previous_path_y[prev_size - 2];
+
+              // update the last two elements to the waypoint that we are creating
+              waypts_x.push_back(prev_ref_x);
+              waypts_x.push_back(ref_x);
+
+              waypts_y.push_back(prev_ref_y);
+              waypts_y.push_back(ref_y);
+            }
+
+            // In Frenet coordinates, find and add 30m spaced waypoints ahead
+            // Just predicting straught path to car's current position values.
+
+            vector<double> wpts_next_0 = getXY(car_s+30, (2+4*lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+            vector<double> wpts_next_1 = getXY(car_s+60, (2+4*lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+            vector<double> wpts_next_2 = getXY(car_s+90, (2+4*lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+
+            // update the predicted future 3 elements to the waypoint that we are creating
+            waypts_x.push_back(wpts_next_0[0]);
+            waypts_x.push_back(wpts_next_1[0]);
+            waypts_x.push_back(wpts_next_2[0]);
+
+            waypts_y.push_back(wpts_next_0[1]);
+            waypts_y.push_back(wpts_next_1[1]);
+            waypts_y.push_back(wpts_next_2[1]);
+
+            // shift way points to car coordinates
+            for (int i = 0; i < waypts_x.size(); i++) {
+                double shift_x = waypts_x[i] - ref_x;
+                double shift_y = waypts_y[i] - ref_y;
+
+                waypts_x[i] = (shift_x*cos(0-ref_yaw)-shift_y*sin(0-ref_yaw));
+                waypts_y[i] = (shift_x*sin(0-ref_yaw)+shift_y*cos(0-ref_yaw));
+            }
+
+            // Create spline to get points for path between the 30m points we predicted
+            tk::spline s;
+
+            // set (x,y) points to the spline
+            s.set_points(waypts_x, waypts_y);
+
 
           	json msgJson;
 
@@ -248,16 +350,46 @@ int main() {
           	vector<double> next_x_vals;
           	vector<double> next_y_vals;
 
-            // Move straight with freent coordinates
+            // We will start with points from previous Path Planner
+            for (int i=0; i<prev_size; i++) {
+              next_x_vals.push_back(previous_path_x[i]);
+              next_y_vals.push_back(previous_path_y[i]);
+            }
 
-            double dist_inc = 0.5;
-            for(int i =0; i<50; i++){
-              double next_s = car_s + (i+1) * dist_inc;
-              double next_d = 6; // car in the middle of second lane in right
-              vector<double> xy =  getXY(next_s, next_d, map_waypoints_s, map_waypoints_x, map_waypoints_y);
+            // calculate how to break the spline points to make sure we choose
+            // points that allow us to travel in our reference velocity
 
-              next_x_vals.push_back(xy[0]);
-              next_y_vals.push_back(xy[1]);
+            double target_x = 30.0; // Total target distance we want to move ahead
+            double target_y = s(target_x); // splie can give equivalent y point
+            double target_dist = sqrt((target_x * target_x) + (target_y * target_y));
+
+            double x_add_on = 0;
+            // Fill rest of path planner after filling with previous set_points
+            // We are looking for 50 points. There can be points that car didnt cover yet
+            // from previous points. Depends in simulator speed etc.
+            // We just decided we want 50, we can have more as well.
+
+            for (int i = 1; i <= 50 - prev_size; i++) {
+              double N = target_dist/(0.02*ref_v/2.24); // getting number of points we need, m/s
+              double x_point = x_add_on + target_x/N;
+              double y_point = s(x_point);
+
+              x_add_on = x_point;
+
+              double x_ref = x_point;
+              double y_ref = y_point;
+
+              // gte back global coordinates
+              x_point = x_ref * cos(ref_yaw)-y_ref*sin(ref_yaw);
+              y_point = x_ref * sin(ref_yaw)+y_ref*cos(ref_yaw);
+
+              // Add to the reference x, which is last point from previous
+              x_point += ref_x;
+              y_point += ref_y;
+
+              next_x_vals.push_back(x_point);
+              next_y_vals.push_back(y_point);
+
             }
 
             msgJson["next_x"] = next_x_vals;
