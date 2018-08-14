@@ -206,10 +206,10 @@ int main() {
   	map_waypoints_dy.push_back(d_y);
     }
 
-    int lane = 1; // start in lane 1
+    int ego_lane = 1; // start in lane 1
     double ref_v = 0.0; // to give speed limit
 
-  h.onMessage([&ref_v, &lane, &map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+  h.onMessage([&ref_v, &ego_lane, &map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -252,35 +252,105 @@ int main() {
               car_s = end_path_s; // we start from the last value
             }
 
+
+            /*****************************************************************************
+              *  Prediction based on Sensor Fusion
+            ****************************************************************************/
+
+            // Lane markers for other cars around the ego car as reported by sensor fusion
             bool too_close = false;
+            bool car_left = false;
+            bool car_right = false;
+
             // check data from sensor fusion
             for (int i=0; i<sensor_fusion.size(); i++) {
               // check if car is our lane
               float d = sensor_fusion[i][6];
-              if( d < (2+ (4*lane)+ 2) && d > (2+ (4*lane) -2)) {
-                double vx = sensor_fusion[i][3];
-                double vy = sensor_fusion[i][4];
-                double other_car_speed = sqrt(vx*vx+vy*vy);
-                double other_car_s = sensor_fusion[i][5];
 
-                // where the car is in future needs to be derived
-                double other_car_s_future = other_car_s + ((double)prev_size * 0.02 * other_car_speed);
-
-                if ( (other_car_s_future > car_s) && ((other_car_s_future - car_s) < 30))
-                {
-                  too_close = true;
-                }
+              // Find the lane of the car
+              int car_lane;
+              if (d >= 0 && d < 4) {
+                  car_lane = 0;
+              } else if (d >= 4 && d < 8) {
+                  car_lane = 1;
+              } else if (d >= 8 && d <= 12) {
+                  car_lane = 2;
+              } else {
+                  continue;
               }
+
+
+              // Check the details of the car in the other lane
+              double vx = sensor_fusion[i][3];
+              double vy = sensor_fusion[i][4];
+              double other_car_speed = sqrt(vx*vx+vy*vy);
+              double other_car_s = sensor_fusion[i][5];
+
+              // where the car is in future needs to be derived
+              // We have to check the s-distance from our car.
+              double other_car_s_future = other_car_s + ((double)prev_size * 0.02 * other_car_speed);
+
+              int ego_gap = 30; // gap we want to keep is 30 meters
+
+              // Check the lane details of the car.
+              if (car_lane == ego_lane) {
+                // Other car is ahead of ego
+                too_close |= (other_car_s_future > car_s) && ((other_car_s_future - car_s) < ego_gap);
+              } else if (car_lane - ego_lane == 1) {
+                // Other car is to the right
+                car_right |= ((car_s - ego_gap) < other_car_s_future) && ((car_s + ego_gap) > other_car_s_future);
+              } else if (ego_lane - car_lane == 1) {
+                // Other car is to the left
+                car_left |= ((car_s - ego_gap) < other_car_s_future) && ((car_s + ego_gap) > other_car_s_future);
+              }
+
+              }
+
+            /*****************************************************************************
+              *  Behaviour Planning
+            ****************************************************************************/
+            // Behaviour planning state machine, work out safe speed and lane to move.
+            // Increase or decrease speed in steps, to avoid jerks
+            // Keep up the speed limit but not overflow.
+            // Switch lanes when safe to do so
+            double acc = 0.224;
+            double max_speed = 49.5;
+            if (too_close) {
+                // Other car is infront, possibility of collission or being slowed down
+                // Decide to shift lanes or slow down if necessary to avoid collission
+                if (!car_right && ego_lane < 2) {
+                    // Checks there is no car in the right, safe to move to the right lane.
+                    // Shift right
+                    ego_lane++;
+                } else if (!car_left && ego_lane > 0) {
+                  // Checks there is no car in the left, safe to move to the left lane.
+                  // Shift left
+                    ego_lane--;
+                } else {
+                    // Not safe to shift left or right as there are cars.
+                    // Slow down to avoid collission
+                    ref_v -= acc;
+                }
+            } else {
+                if (ego_lane != 1) {
+                    // Currently not in the center lane, as we want to position the car.
+                    // Check if it is safe to move back to lane 1 or else keep the current lane.
+                    if ((ego_lane == 2 && !car_left) || (ego_lane == 0 && !car_right)) {
+                        // Move back to the center lane
+                        ego_lane = 1;
+                    }
+                }
+
+                if (ref_v < max_speed) {
+                    // There is no car ahead and we are not yet at the maximum speed limit.
+                    // Accelerate smoothly to increase speed slowly.
+                    ref_v += acc;
+                }
             }
 
-            // manage velocity change smoothly
-            if(too_close){
-              ref_v -= 0.224;
-            }
-            else if(ref_v < 49.5){
-              ref_v += 0.224;
-            }
-
+            /*****************************************************************************
+              *  Trajectory Generation
+            ****************************************************************************/
             // create a list of waypoints spaced at 30m and interpolate using spline
             // Idea is to take two points from previous path and predict three points
             // Use spine to then create path points distanced by 0.5 m
@@ -309,9 +379,13 @@ int main() {
               ref_x = previous_path_x[prev_size - 1];
               ref_y = previous_path_y[prev_size - 1];
 
+
               // take second last point as well
               double prev_ref_x = previous_path_x[prev_size - 2];
               double prev_ref_y = previous_path_y[prev_size - 2];
+
+              ref_yaw = atan2(ref_y-prev_ref_y, ref_x-prev_ref_x);
+
 
               // update the last two elements to the waypoint that we are creating
               waypts_x.push_back(prev_ref_x);
@@ -324,9 +398,9 @@ int main() {
             // In Frenet coordinates, find and add 30m spaced waypoints ahead
             // Just predicting straught path to car's current position values.
 
-            vector<double> wpts_next_0 = getXY(car_s+30, (2+4*lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
-            vector<double> wpts_next_1 = getXY(car_s+60, (2+4*lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
-            vector<double> wpts_next_2 = getXY(car_s+90, (2+4*lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+            vector<double> wpts_next_0 = getXY(car_s+30, (2+4*ego_lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+            vector<double> wpts_next_1 = getXY(car_s+60, (2+4*ego_lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+            vector<double> wpts_next_2 = getXY(car_s+90, (2+4*ego_lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
 
             // update the predicted future 3 elements to the waypoint that we are creating
             waypts_x.push_back(wpts_next_0[0]);
