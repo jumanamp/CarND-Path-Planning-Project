@@ -1,0 +1,15 @@
+graph TD
+A[Ego Lane]
+A -->B(too_close =  true <br> car_right = false <br> car_left = false)
+B -->|Iterate over every car captured by sensor fusion| B1{iterator < sensor_fusion_size}
+B1-->C{Check Car Position}
+C -->|Ahead| D1{Gap_future < 30}
+C -->|Left lane| D2{Gap_future < 30}
+C -->|Right lane| D3{Gap_future < 30}
+D1-->E[set too_close true]
+D2 --> F[set car_left true]
+D3 --> G[set car_right true]
+E --> H{iterator++}
+F --> H{iterator++}
+G --> H{iterator++}
+H --> B1

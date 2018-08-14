@@ -1,0 +1,17 @@
+graph TD
+A[Ego Lane]
+A -->B(max_speed = 49.5 <br> acc =  0.224)
+B-->C{too_close?}
+C -->|yes|D1{no car_right <br> and <br>  ego_lane<2}
+D1 -->E[Move right]
+C -->|yes|D2{no car_left <br> and <br>  ego_lane>0}
+D2 -->F[Move left]
+
+D2 -->|no|G[slowdown by acc]
+D1 -->|no|G[slowdown by acc]
+C--> |no|D4{ego_lane == 2 <br> and <br> no cars to left ?}
+C--> |no|D5{ego_lane == 0 <br> and <br> no cars to right ?}
+D4 --> |yes|H[ego_lane = 1]
+D5 --> |yes|H[ego_lane = 1]
+D4 --> |no|I[keep lane]
+D5 --> |no|I[keep lane]
