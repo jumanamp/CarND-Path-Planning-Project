@@ -101,6 +101,14 @@ For trajectory generation, two points from previous waypoints are taken and thre
 
 Smooth trajectory for the ego vehicle is generated using the http://kluge.in-chemnitz.de/opensource/spline/ function. Spline points are created upon considering that we need to move ahead by 30 m in this interval. The points are generated to make sure that there are always 50 points to move ahead. It really depends on the simulator speed, that how many points are covered in one cycle.
 
+With the solution I was able to drive over 5 miles without incident as shown in the Figure 3 below.
+<p align="center">
+<img width="800" height="600" src="readme/ego_car.PNG">
+</p>
+<p align="center">
+<em>Figure 3: Ego car on the road</em>
+</p>
+
 ---
 ### Project Details provided by Udacity
 
